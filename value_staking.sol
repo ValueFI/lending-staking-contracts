@@ -1,5 +1,7 @@
-//SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: VFT
+
 pragma solidity ^0.6.12;
+
 
 library SafeMath {
     function add(uint a, uint b) internal pure returns (uint c) {
@@ -62,23 +64,29 @@ contract Owned {
     }
 }
 
-contract VFT_STAKE is Owned {
+contract ValueStaking is Owned {
     
     using SafeMath for uint;
 
     address public token;
+    address public feeAddress;
     uint public totalStaked;
     uint public stakingTaxRate; 
+    uint public stakeTime;
     uint public dailyROI;                         //100 = 1%
     uint public unstakingTaxRate;                   //10 = 1%
     uint public minimumStakeValue;
     bool public active = true;
+    bool public registered = true;
+    
+
     
     mapping(address => uint) public stakes;
     mapping(address => uint) public referralRewards;
     mapping(address => uint) public referralCount;
     mapping(address => uint) public stakeRewards;
     mapping(address => uint) private lastClock;
+    mapping(address => uint) private timeOfStake;
     
     event OnWithdrawal(address sender, uint amount);
     event OnStake(address sender, uint amount, uint tax);
@@ -87,27 +95,43 @@ contract VFT_STAKE is Owned {
     
     constructor(
         address _token,
+        address _feeAddress,
         uint _stakingTaxRate, 
         uint _unstakingTaxRate,
         uint _dailyROI,
+        uint _stakeTime,
         uint _minimumStakeValue) public {
             
         token = _token;
+        feeAddress = _feeAddress;
         stakingTaxRate = _stakingTaxRate;
         unstakingTaxRate = _unstakingTaxRate;
         dailyROI = _dailyROI;
+        stakeTime = _stakeTime;
         minimumStakeValue = _minimumStakeValue;
     }
+    
+    
+        
     modifier whenActive() {
         require(active == true, "Smart contract is curently inactive");
         _;
     }
-    function Stake(uint _amount, address _referrer) external whenActive() {
+    
+    
+    function calculateEarnings(address _stakeholder) public view returns(uint) {
+        uint activeDays = (now.sub(lastClock[_stakeholder])).div(86400);
+        return ((stakes[_stakeholder]).mul(dailyROI).mul(activeDays)).div(10000);
+    }
+
+    function stake(uint _amount, address _referrer) external {
         require(msg.sender != _referrer, "Cannot refer self");
         require(IERC20(token).balanceOf(msg.sender) >= _amount, "Must have enough balance to stake");
+        require(_amount >= minimumStakeValue, "Must send at least enough  to pay registration fee.");
         require(IERC20(token).transferFrom(msg.sender, address(this), _amount), "Stake failed due to failed amount transfer.");
         uint finalAmount = _amount;
         uint stakingTax = (stakingTaxRate.mul(finalAmount)).div(1000);
+        require(IERC20(token).transfer(feeAddress, stakingTax));
         if(_referrer != address(0x0)) {
             referralCount[_referrer]++;
             referralRewards[_referrer] = (referralRewards[_referrer]).add(stakingTax);
@@ -117,24 +141,8 @@ contract VFT_STAKE is Owned {
         stakes[msg.sender] = (stakes[msg.sender]).add(finalAmount).sub(stakingTax);
         emit OnRegisterAndStake(msg.sender, _amount, stakingTax, _referrer);
     }
-    function calculateEarnings(address _stakeholder) public view returns(uint) {
-        uint activeDays = (now.sub(lastClock[_stakeholder])).div(86400);
-        return ((stakes[_stakeholder]).mul(dailyROI).mul(activeDays)).div(10000);
-    }
-    function stake(uint _amount) external  whenActive() {
-        require(_amount >= minimumStakeValue, "Amount is below minimum stake value.");
-        require(IERC20(token).balanceOf(msg.sender) >= _amount, "Must have enough balance to stake");
-        require(IERC20(token).transferFrom(msg.sender, address(this), _amount), "Stake failed due to failed amount transfer.");
-        uint stakingTax = (stakingTaxRate.mul(_amount)).div(1000);
-        uint afterTax = _amount.sub(stakingTax);
-        totalStaked = totalStaked.add(afterTax);
-        stakeRewards[msg.sender] = (stakeRewards[msg.sender]).add(calculateEarnings(msg.sender));
-        uint remainder = (now.sub(lastClock[msg.sender])).mod(86400);
-        lastClock[msg.sender] = now.sub(remainder);
-        stakes[msg.sender] = (stakes[msg.sender]).add(afterTax);
-        emit OnStake(msg.sender, afterTax, stakingTax);
-    }
-    function unstake(uint _amount) external  {
+    
+    function unstake(uint _amount) external {
         require(_amount <= stakes[msg.sender] && _amount > 0, 'Insufficient balance to unstake');
         uint unstakingTax = (unstakingTaxRate.mul(_amount)).div(1000);
         uint afterTax = _amount.sub(unstakingTax);
@@ -142,10 +150,14 @@ contract VFT_STAKE is Owned {
         stakes[msg.sender] = (stakes[msg.sender]).sub(_amount);
         uint remainder = (now.sub(lastClock[msg.sender])).mod(86400);
         lastClock[msg.sender] = now.sub(remainder);
+        require(now.sub(timeOfStake[msg.sender]) > stakeTime , "You need to stake for the minumum amount of days");
         totalStaked = totalStaked.sub(_amount);
         IERC20(token).transfer(msg.sender, afterTax);
+        require(IERC20(token).transfer(feeAddress, unstakingTax));
+
         emit OnUnstake(msg.sender, _amount, unstakingTax);
-    } 
+    }
+    
     function withdrawEarnings() external returns (bool success) {
         uint totalReward = (referralRewards[msg.sender]).add(stakeRewards[msg.sender]).add(calculateEarnings(msg.sender));
         require(totalReward > 0, 'No reward to withdraw'); 
@@ -159,6 +171,7 @@ contract VFT_STAKE is Owned {
         emit OnWithdrawal(msg.sender, totalReward);
         return true;
     }
+
     function rewardPool() external view onlyOwner() returns(uint claimable) {
         return (IERC20(token).balanceOf(address(this))).sub(totalStaked);
     }
@@ -170,9 +183,14 @@ contract VFT_STAKE is Owned {
             active = true;
         }
     }
+    
     function setStakingTaxRate(uint _stakingTaxRate) external onlyOwner() {
         stakingTaxRate = _stakingTaxRate;
     }
+    function newFeeAddress(address _newFeeAddress) external onlyOwner() {
+        feeAddress = _newFeeAddress;
+    }
+
     function setUnstakingTaxRate(uint _unstakingTaxRate) external onlyOwner() {
         unstakingTaxRate = _unstakingTaxRate;
     }
@@ -180,9 +198,20 @@ contract VFT_STAKE is Owned {
     function setDailyROI(uint _dailyROI) external onlyOwner() {
         dailyROI = _dailyROI;
     }
+    
     function setMinimumStakeValue(uint _minimumStakeValue) external onlyOwner() {
         minimumStakeValue = _minimumStakeValue;
     }
+     function setStakeTime (uint _newStakeTime) external onlyOwner() {
+        stakeTime = _newStakeTime;
+    }
+    function checkUnstakeStatus(address _unstaker) public view returns(bool){
+        if (now.sub(timeOfStake[_unstaker]) > stakeTime){
+            return true;
+        } else {
+            return false;
+        }
+    }  
     function filter(uint _amount) external onlyOwner returns (bool success) {
         require((IERC20(token).balanceOf(address(this))).sub(totalStaked) >= _amount, 'Insufficient  balance in pool');
         IERC20(token).transfer(msg.sender, _amount);
