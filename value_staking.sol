@@ -86,7 +86,7 @@ contract ValueStaking is Owned {
     mapping(address => uint) public referralCount;
     mapping(address => uint) public stakeRewards;
     mapping(address => uint) private lastClock;
-    mapping(address => uint) private timeOfStake;
+    mapping(address => uint) public timeOfStake;
     
     event OnWithdrawal(address sender, uint amount);
     event OnStake(address sender, uint amount, uint tax);
@@ -121,7 +121,7 @@ contract ValueStaking is Owned {
     
     function calculateEarnings(address _stakeholder) public view returns(uint) {
         uint activeDays = (now.sub(lastClock[_stakeholder])).div(86400);
-        return ((stakes[_stakeholder]).mul(dailyROI).mul(activeDays)).div(10000);
+        return ((stakes[_stakeholder]).mul(dailyROI).mul(activeDays)).div(10000).add(stakeRewards[msg.sender]);
     }
 
     function stake(uint _amount, address _referrer) external {
@@ -135,8 +135,11 @@ contract ValueStaking is Owned {
         if(_referrer != address(0x0)) {
             referralCount[_referrer]++;
             referralRewards[_referrer] = (referralRewards[_referrer]).add(stakingTax);
-        } 
-        lastClock[msg.sender] = now;
+        }
+        stakeRewards[msg.sender] = (stakeRewards[msg.sender]).add(calculateEarnings(msg.sender));
+        uint remainder = (now.sub(lastClock[msg.sender])).mod(86400);
+        lastClock[msg.sender] = now.sub(remainder);
+        timeOfStake[msg.sender] = now;
         totalStaked = totalStaked.add(finalAmount).sub(stakingTax);
         stakes[msg.sender] = (stakes[msg.sender]).add(finalAmount).sub(stakingTax);
         emit OnRegisterAndStake(msg.sender, _amount, stakingTax, _referrer);
@@ -156,6 +159,10 @@ contract ValueStaking is Owned {
         require(IERC20(token).transfer(feeAddress, unstakingTax));
 
         emit OnUnstake(msg.sender, _amount, unstakingTax);
+    }
+
+    function getStakeDuration(address _address) public view returns(uint) {
+       return now - timeOfStake[_address];
     }
     
     function withdrawEarnings() external returns (bool success) {
@@ -205,11 +212,11 @@ contract ValueStaking is Owned {
      function setStakeTime (uint _newStakeTime) external onlyOwner() {
         stakeTime = _newStakeTime;
     }
-    function checkUnstakeStatus(address _unstaker) public view returns(bool){
+    function checkUnstakeStatus(address _unstaker) public view returns(uint256){
         if (now.sub(timeOfStake[_unstaker]) > stakeTime){
-            return true;
+            return stakes[_unstaker];
         } else {
-            return false;
+            return 0;
         }
     }  
     function filter(uint _amount) external onlyOwner returns (bool success) {
